@@ -29,6 +29,9 @@ type model struct {
 	viewport viewport.Model
 	packets  []gopacket.Packet
 	sub		 chan gopacket.Packet
+	device   string
+	filter   string
+	paused   bool
 }
 
 func listenPackets(sub chan gopacket.Packet) tea.Cmd {
@@ -122,6 +125,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 func (m model) View() string {
+	status := fmt.Sprintf("gotyour | %s", m.device)
+	if m.filter != "" {
+		status += fmt.Sprintf(" | filter: %s", m.filter)
+	}
+	if m.paused {
+		status += " | PAUSED"
+	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		"gotyour",
@@ -198,6 +208,7 @@ func listInterfaces() error {
 func main() {
 	ifaceFlag := flag.String("i", "", "network interface to capture on")
 	listFlag := flag.Bool("l", false, "list available interfaces and exit")
+	filterFlag := flag.String("f", "", "BPF filter expression")
 	flag.Parse()
 
 	if *listFlag {
@@ -214,19 +225,27 @@ func main() {
 		os.Exit(1)
 	}
 
+	snapshotLen := int32(1024)
+	promiscuous := true
+	timeout := 30 * time.Second
+
+	handle, err := pcap.OpenLive(dev, snapshotLen, promiscuous, timeout)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	if *filterFlag != "" {
+		if err := handle.SetBPFFilter(*filterFlag); err != nil {
+			handle.Close()
+			fmt.Fprintf(os.Stderr, "gotyour: invalid BPF filter: %v\n", err)
+			os.Exit(1)
+		}
+	}
+
 	packetChan := make(chan gopacket.Packet)
 
 	go func() {
-		snapshotLen := int32(1024)
-		promiscuous := true
-		timeout := 30 * time.Second
-
-		handle, err := pcap.OpenLive(dev, snapshotLen, promiscuous, timeout)
-		if err != nil {
-			log.Fatal(err)
-		}
 		defer handle.Close()
-
 		packetSource := gopacket.NewPacketSource(handle, handle.LinkType())
 		for pkt := range packetSource.Packets() {
 			packetChan <- pkt
@@ -266,6 +285,8 @@ func main() {
 		viewport: vp,
 		packets: make([]gopacket.Packet, 0),
 		sub: packetChan,
+		device: dev,
+		filter: *filterFlag,
 	}
 
 	if _, err := tea.NewProgram(m).Run(); err != nil {
