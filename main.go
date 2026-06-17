@@ -68,7 +68,7 @@ func parsePacketSummary(packet gopacket.Packet) (src, dst, proto, length string)
 		src = netLayer.NetworkFlow().Src().String()
 		dst = netLayer.NetworkFlow().Dst().String()
 	}
-	
+
 	if transportLayer := packet.TransportLayer(); transportLayer != nil {
 		proto = transportLayer.LayerType().String()
 	} else if ipLayer := packet.Layer(layers.LayerTypeIPv4); ipLayer != nil {
@@ -83,11 +83,21 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
-		if msg.String() == "q" || msg.String() == "ctrl+c" {
+		switch msg.String() {
+		case "q", "ctrl+c":
 			return m, tea.Quit
+		case "p":
+			m.paused = !m.paused
+		case "c":
+			m.packets = nil
+			m.table.SetRows(nil)
+			m.viewport.SetContent("buffer cleared")
 		}
 
 	case packetMsg:
+		if m.paused {
+			return m, listenPackets(m.sub)
+		}
 		pkt := msg.packet
 		m.packets = append(m.packets, pkt)
 
@@ -134,7 +144,7 @@ func (m model) View() string {
 	}
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
-		"gotyour",
+		status,
 		baseStyle.Render(m.table.View()),
 		baseStyle.Render(m.viewport.View()),
 	)
