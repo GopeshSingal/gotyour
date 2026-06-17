@@ -1,6 +1,7 @@
 package main
 
 import (
+	"flag"
 	"fmt"
 	"log"
 	"os"
@@ -129,16 +130,98 @@ func (m model) View() string {
 	)
 }
 
+func pickDefaultDevice(devs []pcap.Interface) string {
+	for _, d := range devs {
+		if d.Name == "lo" {
+			continue
+		}
+		for _, addr := range d.Addresses {
+			if addr.IP != nil && !addr.IP.IsLoopback() {
+				return d.Name
+			}
+		}
+	}
+
+	for _, d := range devs {
+		if d.Name != "lo" {
+			return d.Name
+		}
+	}
+
+	if len(devs) > 0 {
+		return devs[0].Name
+	}
+
+	return ""
+}
+
+func resolveInterface(name string) (string, error) {
+	devs, err := pcap.FindAllDevs()
+	if err != nil {
+		return "", fmt.Errorf("enumerate devices: %w", err)
+	}
+	if len(devs) == 0 {
+		return "", fmt.Errorf("no capture devices found")
+	}
+
+	if name != "" {
+		for _, d := range devs {
+			if d.Name == name {
+				return d.Name, nil
+			}
+		}
+		return "", fmt.Errorf("interface %q not found (use -l to list)", name)
+	}
+	if picked := pickDefaultDevice(devs); picked != "" {
+		return picked, nil
+	}
+	return "", fmt.Errorf("no suitable default interface found")
+}
+
+func listInterfaces() error {
+	devs, err := pcap.FindAllDevs()
+	if err != nil {
+		return err
+	}
+	for _, d := range devs {
+		fmt.Printf("%s\n", d.Name)
+		if d.Description != "" {
+			fmt.Printf("  %s\n", d.Description)
+		}
+		for _, addr := range d.Addresses {
+			fmt.Printf("  %s\n", addr.IP)
+		}
+	}
+	return nil
+}
+
 func main() {
+	ifaceFlag := flag.String("i", "", "network interface to capture on")
+	listFlag := flag.Bool("l", false, "list available interfaces and exit")
+	flag.Parse()
+
+	if *listFlag {
+		if err := listInterfaces(); err != nil {
+			fmt.Fprintf(os.Stderr, "gotyour: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	dev, err := resolveInterface(*ifaceFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "gotyour: %v\n", err)
+		os.Exit(1)
+	}
+
 	packetChan := make(chan gopacket.Packet)
 
 	go func() {
-		device := "wlp15s0"
 		snapshotLen := int32(1024)
 		promiscuous := true
 		timeout := 30 * time.Second
 
-		handle, err := pcap.OpenLive(device, snapshotLen, promiscuous, timeout)
+		handle, err := pcap.OpenLive(dev, snapshotLen, promiscuous, timeout)
 		if err != nil {
 			log.Fatal(err)
 		}
@@ -176,7 +259,7 @@ func main() {
 	t.SetStyles(s)
 
 	vp := viewport.New(70, 12)
-	vp.SetContent("Listening for packets...")
+	vp.SetContent(fmt.Sprintf("Listening on %s...", dev))
 
 	m := model{
 		table: t,
