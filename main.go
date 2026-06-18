@@ -24,6 +24,8 @@ type packetMsg struct {
 	packet gopacket.Packet
 }
 
+type tickMsg time.Time
+
 type model struct {
 	table 	 table.Model
 	viewport viewport.Model
@@ -32,6 +34,11 @@ type model struct {
 	device   string
 	filter   string
 	paused   bool
+
+	// packet rates
+	totalPackets uint64
+	timePackets  uint64
+	packetRate	 float64
 }
 
 func listenPackets(sub chan gopacket.Packet) tea.Cmd {
@@ -41,7 +48,10 @@ func listenPackets(sub chan gopacket.Packet) tea.Cmd {
 }
 
 func (m model) Init() tea.Cmd {
-	return listenPackets(m.sub)
+	return tea.Batch(
+		listenPackets(m.sub),
+		tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) }),
+	)
 }
 
 func (m *model) updateDetailView() {
@@ -92,12 +102,18 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.packets = nil
 			m.table.SetRows(nil)
 			m.viewport.SetContent("buffer cleared")
+			m.totalPackets = 0
+			m.timePackets = 0
+			m.packetRate = 0.0
 		}
 
 	case packetMsg:
 		if m.paused {
 			return m, listenPackets(m.sub)
 		}
+		m.totalPackets++
+		m.timePackets++
+
 		pkt := msg.packet
 		m.packets = append(m.packets, pkt)
 
@@ -121,6 +137,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateDetailView()
 
 		return m, listenPackets(m.sub)
+	
+	case tickMsg:
+		if !m.paused {
+			m.packetRate = float64(m.timePackets)
+		}
+
+		m.timePackets = 0
+		return m, tea.Tick(time.Second, func(t time.Time) tea.Msg { return tickMsg(t) })
 	}
 
 	var tableCmd tea.Cmd
@@ -142,6 +166,9 @@ func (m model) View() string {
 	if m.paused {
 		status += " | PAUSED"
 	}
+
+	status += fmt.Sprintf(" | pkts: %d | rate: %.1f/s", m.totalPackets, m.packetRate)
+
 	return lipgloss.JoinVertical(
 		lipgloss.Left,
 		status,
